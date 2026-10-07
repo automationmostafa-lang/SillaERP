@@ -12,6 +12,7 @@ from PySide6.QtGui import (QFont, QColor, QPainter, QPixmap, QImage, QIcon,
                            QTextDocument, QPageLayout, QPageSize, QBrush)
 from PySide6.QtWidgets import *
 from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog, QPrinterInfo
+from license_gate import license_gate, license_start_meter
 
 DIR  = os.path.dirname(os.path.abspath(__file__))
 DB   = os.path.join(DIR, "retail_erp.db")
@@ -2262,6 +2263,47 @@ class InventoryPage(QWidget):
     def ensure_rows(s, *_):
         x("INSERT OR IGNORE INTO stock(product_id,location_id,qty) "
           "SELECT p.id, l.id, 0 FROM products p, locations l")
+    def shopping_list(s):
+        rows = q("""SELECT p.*, IFNULL((SELECT SUM(qty) FROM stock
+                 WHERE product_id=p.id),0) tot FROM products p
+                 WHERE active=1 ORDER BY name""")
+        need = [(p, max(p["min_stock"] * 2 - p["tot"], 1))
+                for p in rows if p["tot"] < p["min_stock"]]
+        if not need:
+            QMessageBox.information(s, APP, "✅ " + T("All above minimum"))
+            return
+        d = QDialog(s); d.setWindowTitle("🛒 " + T("Shopping list"))
+        d.resize(760, 560); v = QVBoxLayout(d)
+        t = QTableWidget(len(need), 6)
+        t.setHorizontalHeaderLabels([T("Product Name"), T("Code"),
+            T("Min Stock"), T("Total"), T("Suggested"), T("Est. cost")])
+        t.verticalHeader().setDefaultSectionSize(46)
+        t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        t.setEditTriggers(QTableWidget.NoEditTriggers)
+        tot_val = 0.0
+        for i, (p, sug) in enumerate(need):
+            tot_val += sug * p["cost"]
+            for j, val in enumerate([disp_name(p), p["barcode"],
+                    f"{p['min_stock']:g}", f"{p['tot']:g}", f"{sug:g}",
+                    money(sug * p["cost"])]):
+                it = QTableWidgetItem(str(val))
+                it.setTextAlignment(Qt.AlignCenter)
+                t.setItem(i, j, it)
+        v.addWidget(t, 1)
+        lab = QLabel("💰 " + T("Est. cost") + ": " + money(tot_val)
+                     + " " + cur())
+        lab.setObjectName("big"); v.addWidget(lab)
+        hb = QHBoxLayout()
+        ex = QPushButton("📤 " + T("Export CSV")); ex.setObjectName("primary")
+        ex.clicked.connect(lambda: export_csv(
+            [T("Product Name"), T("Code"), T("Min Stock"), T("Total"),
+             T("Suggested"), T("Est. cost")],
+            [[disp_name(p), p["barcode"], p["min_stock"], p["tot"], sug,
+              sug * p["cost"]] for p, sug in need]))
+        cl = QPushButton(T("Close")); cl.clicked.connect(d.accept)
+        hb.addWidget(ex); hb.addWidget(cl); hb.addStretch(1); v.addLayout(hb)
+        d.exec()
+
     def _rows_now(s):
         lid = s.sfl.currentData() if hasattr(s, "sfl") else None
         locs = q("SELECT * FROM locations ORDER BY CASE WHEN type='warehouse' "
@@ -5436,6 +5478,8 @@ def main():
     except Exception: pass
     sync_app_name()
     apply_theme()
+    if not license_gate(APP):
+        conn.close(); sys.exit(0)
     try:
         _tw_init = QTableWidget.__init__
         def _tw_big(self, *a, **k):
@@ -5493,6 +5537,7 @@ def main():
     w = MainWindow(); globals()["_mw"] = w
     if LANG == "ar": w.setLayoutDirection(Qt.RightToLeft)
     w.showMaximized()
+    license_start_meter(APP, w)
     if notes: QMessageBox.information(w, APP, "\n".join(notes))
     sys.exit(app.exec())
 
