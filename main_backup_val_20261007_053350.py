@@ -976,11 +976,7 @@ class TableEditor(QWidget):
                 editable_combo(w)
                 if rec:
                     ix = w.findData(rec[col])
-                    if ix >= 0:
-                        w.setCurrentIndex(ix)
-                    elif rec[col] is not None:
-                        w.addItem(str(rec[col]), rec[col])
-                        w.setCurrentIndex(w.count() - 1)
+                    if ix >= 0: w.setCurrentIndex(ix)
             elif typ == "date":
                 w = QDateEdit(QDate.currentDate()); w.setCalendarPopup(True)
                 if rec and rec[col]:
@@ -1001,7 +997,6 @@ class TableEditor(QWidget):
         if typ == "date":   return w.date().toString("yyyy-MM-dd")
         if typ == "memo":   return w.toPlainText()
         if typ == "combo":  return w.currentData()
-        if typ == "text":   return w.text()
         return w.value()
     def add(s):
         extra = {}
@@ -1011,15 +1006,11 @@ class TableEditor(QWidget):
         d, ed = s.form()
         if d.exec() != QDialog.Accepted: return
         cols = list(extra.keys()); vals = list(extra.values())
-        try:
-            for col, (typ, w) in ed.items():
-                v_ = s._val(typ, w)
-                if s.table == "users" and col == "password":
-                    v_ = hashlib.sha256(
-                        (str(v_) or "123456").encode()).hexdigest()
-                cols.append(col); vals.append(v_)
-        except Exception as e:
-            QMessageBox.critical(s, APP, "❌ " + str(e)); return
+        for col, (typ, w) in ed.items():
+            v_ = s._val(typ, w)
+            if s.table == "users" and col == "password":
+                v_ = hashlib.sha256((str(v_) or "123456").encode()).hexdigest()
+            cols.append(col); vals.append(v_)
         try:
             new_id = x(f"INSERT INTO {s.table}({','.join(cols)}) "
                        f"VALUES({','.join('?'*len(cols))})", vals)
@@ -1041,15 +1032,12 @@ class TableEditor(QWidget):
         d, ed = s.form(rec)
         if d.exec() != QDialog.Accepted: return
         sets = []; vals = []
-        try:
-            for col, (typ, w) in ed.items():
-                v_ = s._val(typ, w)
-                if s.table == "users" and col == "password":
-                    if not v_: continue
-                    v_ = hashlib.sha256(str(v_).encode()).hexdigest()
-                sets.append(f"{col}=?"); vals.append(v_)
-        except Exception as e:
-            QMessageBox.critical(s, APP, "❌ " + str(e)); return
+        for col, (typ, w) in ed.items():
+            v_ = s._val(typ, w)
+            if s.table == "users" and col == "password":
+                if not v_: continue
+                v_ = hashlib.sha256(str(v_).encode()).hexdigest()
+            sets.append(f"{col}=?"); vals.append(v_)
         try:
             x(f"UPDATE {s.table} SET {','.join(sets)} WHERE id=?", vals + [i])
             log(f"edit_{s.table}", f"id={i}")
