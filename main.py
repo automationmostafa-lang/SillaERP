@@ -14,11 +14,14 @@ from PySide6.QtWidgets import *
 from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog, QPrinterInfo
 from license_gate import license_gate, license_start_meter
 
-DIR  = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):
+    DIR = os.path.dirname(sys.executable)
+else:
+    DIR = os.path.dirname(os.path.abspath(__file__))
 DB   = os.path.join(DIR, "retail_erp.db")
 LOGO_FILE = os.path.join(DIR, "logo.png")
 RESET_PASSWORD = "admin2026"
-EMPTY_START = False
+EMPTY_START = True
 BRAND_AR = "هايبر ماركت"
 BRAND_EN = "Hyper Market"
 APP = BRAND_AR
@@ -32,8 +35,15 @@ def brand_by():
     return ("برمجة: م/ مصطفى هشام" if LANG == "ar"
             else "by: ENG/Mostafa Hesham")
 
+def _res(name):
+    """مسار ملف مصدر: بجانب EXE في الوضع المجمد"""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), name)
+    return os.path.join(DIR, name)
+
 def logo_pixmap(size=64):
     try:
+        LOGO_FILE = _res("logo.png")
         if os.path.exists(LOGO_FILE):
             pm = QPixmap(LOGO_FILE)
             if not pm.isNull():
@@ -506,6 +516,15 @@ def seed_system_only():
                  "currency":"EGP","currency_ar":"ج.م","theme":"light","lang":"ar",
                  "receipt_footer":"Thank you for shopping with us!"}.items():
         x("INSERT INTO settings(key,value) VALUES(?,?)", (k, v))
+    # المواقع الأساسية — المحل والمخزن الرئيسي فقط
+    _l1 = x("INSERT INTO locations(name,type) VALUES('المحل','branch')")
+    _l2 = x("INSERT INTO locations(name,type) VALUES('المخزن الرئيسي','warehouse')")
+    x("UPDATE locations SET supply_from=? WHERE id=?", (_l2, _l1))
+    # ربط كل دور بصلاحياته الأساسية (يحفظ العميل خطوة)
+    MODS = list(MOD_AR.keys())
+    for m in MODS:
+        x("INSERT INTO role_permissions(role,module,allowed) "
+          "VALUES('admin',?,1)", (m,))
     conn.commit()
 
 def migrate():
@@ -642,6 +661,14 @@ PAL = {
    "greenD":"#059669","red":"#f87171","amber":"#fbbf24","side":"#060d1a",
    "side2":"#132441","input":"#0e1930","sel":"#1e3a8a"},
 }
+def _apply_auto_font():
+    mw = globals().get("_mw")
+    if mw is None: return 13
+    w = mw.width()
+    if w < 900: return 12
+    if w > 1500: return 14
+    return 13
+
 def apply_theme(dark=None):
     if dark is not None:
         SET["theme"] = "dark" if dark else "light"
@@ -728,8 +755,15 @@ def apply_theme(dark=None):
     L.append("#side QPushButton:checked { background:" + side_on +
              "; color:" + side_on_c + "; font-weight:700; }")
     L.append("#head { background:@card; border-bottom:1px solid @border; }")
+    L.append("#side QScrollArea, #side #sideInner { background:transparent; }"
+             )
     qss = "\n".join(L)
     for k, v in p.items(): qss = qss.replace("@" + k, v)
+    try:
+        _fs = _apply_auto_font()
+        qss = qss.replace("font-size:13px", "font-size:%dpx" % _fs)
+        qss = qss.replace("font-size:14px", "font-size:%dpx" % (_fs + 1))
+    except Exception: pass
     QApplication.instance().setStyleSheet(qss)
 
 IC = {"dash":"📊","pos":"🧾","sales":"💳","quotes":"📑","einvoice":"⚡","shifts":"🕒",
@@ -4614,26 +4648,40 @@ class UsersPage(QWidget):
         s.tbl.doubleClicked.connect(lambda *_: s.edit_user())
         uv.addWidget(s.tbl, 1)
         tb.addTab(uw, "👤 " + T("Users"))
-        pv = QWidget(); pg = QGridLayout(pv)
+        s.ROLE_LIST = ["admin", "manager", "cashier", "store", "account"]
         s.MODS = list(MOD_AR.keys())
-        roles = ["admin", "manager", "cashier", "store", "account"]
+        wrap = QWidget(); wv = QVBoxLayout(wrap); wv.setContentsMargins(8,8,8,8)
+        s.perm_tbl = QTableWidget(len(s.MODS), 6)
+        s.perm_tbl.setHorizontalHeaderLabels(
+            [T("Module")] + ["🛡 " + r for r in s.ROLE_LIST])
+        s.perm_tbl.verticalHeader().setVisible(False)
+        s.perm_tbl.verticalHeader().setDefaultSectionSize(46)
+        s.perm_tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in range(1, 6):
+            s.perm_tbl.horizontalHeader().setSectionResizeMode(
+                col, QHeaderView.Stretch)
+        s.perm_tbl.setAlternatingRowColors(True)
         s.checks = {}
-        for j, r in enumerate(roles): pg.addWidget(QLabel("🛡 " + r), 0, j + 1)
         for i, m in enumerate(s.MODS):
-            pg.addWidget(QLabel(MOD_AR[m] if LANG == "ar" else m), i + 1, 0)
-            for j, r in enumerate(roles):
+            it0 = QTableWidgetItem(MOD_AR[m] if LANG == "ar" else m)
+            it0.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            s.perm_tbl.setItem(i, 0, it0)
+            for j, r in enumerate(s.ROLE_LIST):
                 cr = q1("SELECT allowed FROM role_permissions WHERE role=? "
                         "AND module=?", (r, m))
                 cb = QCheckBox(); cb.setChecked(bool(cr and cr["allowed"]))
                 if r == "admin":
                     cb.setChecked(True); cb.setEnabled(False)
-                s.checks[(r, m)] = cb; pg.addWidget(cb, i + 1, j + 1)
+                s.checks[(r, m)] = cb
+                wcb = QWidget()
+                hl = QHBoxLayout(wcb); hl.setContentsMargins(0,0,0,0)
+                hl.addWidget(cb, 0, Qt.AlignCenter)
+                s.perm_tbl.setCellWidget(i, j + 1, wcb)
         pb = QPushButton("💾 " + T("Save") + " " + T("Permissions"))
-        pb.setObjectName("success"); pb.setMinimumHeight(42)
+        pb.setObjectName("success"); pb.setMinimumHeight(44)
         pb.clicked.connect(s.save_perms)
-        pg.addWidget(pb, len(s.MODS) + 1, 0, 1, 6)
-        sc = QScrollArea(); sc.setWidgetResizable(True); sc.setWidget(pv)
-        wrap = QWidget(); wv = QVBoxLayout(wrap); wv.addWidget(sc)
+        wv.addWidget(s.perm_tbl, 1)
+        wv.addWidget(pb)
         tb.addTab(wrap, "🛡 " + T("Permissions"))
         logw = QWidget(); lv2 = QVBoxLayout(logw)
         clr = QPushButton("🧹 " + T("Activity Log") + " — admin")
@@ -4809,11 +4857,14 @@ class UsersPage(QWidget):
     def save_perms(s):
         for (r, m), cb in s.checks.items():
             if r == "admin": continue
+            if r == "admin": continue
             x("INSERT INTO role_permissions(role,module,allowed) VALUES(?,?,?) "
               "ON CONFLICT(role,module) DO UPDATE SET allowed=excluded.allowed",
               (r, m, 1 if cb.isChecked() else 0))
         log("permissions_save")
         QMessageBox.information(s, APP, "✅ " + T("Saved"))
+        if hasattr(s, "mw") and hasattr(s.mw, "broadcast_all"):
+            s.mw.broadcast_all()
 
 # ============================== REPORTS ======================================
 class ReportsPage(QWidget):
@@ -5004,6 +5055,11 @@ class SettingsPage(QWidget):
         s.dpr = QCheckBox(T("Direct print"))
         s.dpr.setChecked(SET.get("direct_print") == "1")
         g.addRow(s.dpr)
+        s.asb = QCheckBox("☰ " + ("القايمة دائمًا ظاهرة"
+                                   if LANG == "ar"
+                                   else "Always show sidebar"))
+        s.asb.setChecked(SET.get("always_sidebar") == "1")
+        g.addRow(s.asb)
         s.alock = QSpinBox(); s.alock.setRange(0, 240)
         s.alock.setValue(int(float(SET.get("autolock_min", 0))))
         s.alock.setMinimumHeight(38); s.alock.setAlignment(Qt.AlignCenter)
@@ -5031,7 +5087,9 @@ class SettingsPage(QWidget):
         for k_, w_ in (("vat", str(s.vat.value())),
                        ("printer_name", s.prt.text().strip()),
                        ("direct_print", "1" if s.dpr.isChecked() else "0"),
-                       ("autolock_min", str(s.alock.value()))):
+                       ("autolock_min", str(s.alock.value())),
+                       ("always_sidebar",
+                        "1" if s.asb.isChecked() else "0")):
             x("INSERT INTO settings(key,value) VALUES(?,?) "
               "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k_, w_))
         load_settings(); log("settings_save")
@@ -5048,9 +5106,11 @@ class SettingsPage(QWidget):
         if not path: return
         if QMessageBox.question(s, APP, T("Are you sure?")) == QMessageBox.Yes:
             conn.commit(); conn.close(); shutil.copy(path, DB)
-            QMessageBox.information(s, APP, T("Restored — restart required"))
-            QProcess.startDetached(sys.executable,
-                                   [os.path.abspath(__file__)])
+            QMessageBox.information(s, APP,
+                "♻️ " + T("Restored — restart required") + "\n\n" +
+                ("أغلق البرنامج وافتحه مرة أخرى"
+                 if LANG == "ar" else
+                 "Close and reopen the application."))
             QApplication.quit()
     def factory_reset(s):
         _ar = LANG == "ar"
@@ -5104,7 +5164,11 @@ class SettingsPage(QWidget):
         for f_ in (DB, DB + "-wal", DB + "-shm"):
             try: os.remove(f_)
             except Exception: pass
-        QProcess.startDetached(sys.executable, [os.path.abspath(__file__)])
+        QMessageBox.information(s, APP,
+            "🔴 " + T("Factory Reset") + " — " +
+            ("تم بنجاح! أغلق البرنامج وافتحه مرة أخرى، وسيبدأ من جديد."
+             if LANG == "ar" else
+             "done! Close and reopen — it will start fresh."))
         QApplication.quit()
 
 # ============================== TRASH ========================================
@@ -5250,8 +5314,15 @@ class MainWindow(QMainWindow):
         root = QWidget(); h = QHBoxLayout(root)
         h.setContentsMargins(0, 0, 0, 0); h.setSpacing(0)
         side = QFrame(); side.setObjectName("side"); side.setFixedWidth(250)
-        sv = QVBoxLayout(side)
+        sv0 = QVBoxLayout(side); sv0.setContentsMargins(0, 0, 0, 0)
+        side_scroll = QScrollArea(); side_scroll.setWidgetResizable(True)
+        side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        side_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        side_inner = QWidget(); side_inner.setObjectName("sideInner")
+        sv = QVBoxLayout(side_inner)
         sv.setContentsMargins(10, 16, 10, 10); sv.setSpacing(2)
+        side_scroll.setWidget(side_inner)
+        sv0.addWidget(side_scroll)
         lg = QHBoxLayout()
         logo = QLabel(); logo.setAlignment(Qt.AlignCenter)
         _pm = logo_pixmap(56)
@@ -5323,6 +5394,14 @@ class MainWindow(QMainWindow):
         tbv.addWidget(s.title); tbv.addWidget(s.sub)
         hh.addLayout(tbv); hh.addStretch(1)
         s.clock = QLabel(""); hh.addWidget(s.clock)
+        menu_btn = QPushButton("☰")
+        menu_btn.setObjectName("ghost")
+        menu_btn.setFixedSize(42, 40)
+        menu_btn.setStyleSheet("font-size:20px; font-weight:900;")
+        menu_btn.setToolTip(("القائمة" if LANG == "ar" else "Menu") +
+                            " (Ctrl+M)")
+        menu_btn.clicked.connect(s.toggle_sidebar)
+        hh.addWidget(menu_btn)
         lang = QPushButton("🌐 " + ("EN" if LANG == "ar" else "ع"))
         lang.setObjectName("ghost"); lang.clicked.connect(s.toggle_lang)
         hh.addWidget(lang)
@@ -5356,7 +5435,46 @@ class MainWindow(QMainWindow):
             s._idle_timer.timeout.connect(_idle_tick)
             s._idle_timer.start(1000)
         except Exception: pass
+        # --- سلوك القايمة حسب حجم الشاشة (Overlay على الصغيرة) ---
+        s._drawer_open = False
+        side.raise_()
+
+        def _apply_sidebar():
+            wide = (s.width() >= 1100
+                    or SET.get("always_sidebar") == "1")
+            if wide:
+                side.setVisible(True)
+                s._drawer_open = False
+                menu_btn.setText("☰")
+            else:
+                side.setVisible(s._drawer_open)
+                menu_btn.setText("✖" if s._drawer_open else "☰")
+
+        def _toggle_drawer():
+            if s.width() >= 1100 and SET.get("always_sidebar") != "1":
+                side.setVisible(not side.isVisible())
+                return
+            s._drawer_open = not s._drawer_open
+            _apply_sidebar()
+
+        s._apply_sidebar = _apply_sidebar
+        s._toggle_drawer = _toggle_drawer
+        menu_btn.clicked.disconnect()
+        menu_btn.clicked.connect(_toggle_drawer)
+        def _res(evt, _orig=s.resizeEvent):
+            _orig(evt)
+            _apply_sidebar()
+            if not hasattr(s, "_font_t"):
+                s._font_t = QTimer(s); s._font_t.setSingleShot(True)
+                s._font_t.timeout.connect(lambda: apply_theme())
+            s._font_t.start(300)
+        s.resizeEvent = _res
+        QTimer.singleShot(150, _apply_sidebar)
         s.pages = {}; s.goto("dash")
+    def toggle_sidebar(s):
+        s._sidebar_visible = not s._sidebar_visible
+        s._apply_sidebar()
+
     def tick(s):
         n = dt.datetime.now()
         dn = ["Monday","Tuesday","Wednesday","Thursday","Friday",
@@ -5418,6 +5536,11 @@ class MainWindow(QMainWindow):
         for kk, b in s.navs.items(): b.setChecked(kk == k)
         w = s.page(k); s.stack.setCurrentWidget(w)
         s._refresh_page(k)
+        try:
+            if s.width() < 1100 and SET.get("always_sidebar") != "1":
+                s._drawer_open = False
+                s._apply_sidebar()
+        except Exception: pass
         s.title.setText(("🏠  " if k == "dash" else "") + T(PAGES[k][0]))
         s.sub.setText(PAGES[k][1] if LANG == "ar" else PAGES[k][2])
     def refresh_dash(s):
